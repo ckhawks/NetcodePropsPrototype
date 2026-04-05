@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("NetcodePropsPrototype")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+adbde126c9b0cee05eba0fe671b932db6edca570")]
 [assembly: System.Reflection.AssemblyProductAttribute("NetcodePropsPrototype")]
 [assembly: System.Reflection.AssemblyTitleAttribute("NetcodePropsPrototype")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

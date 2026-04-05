@@ -6,6 +6,11 @@ using Unity.Netcode;
 
 namespace NetcodePropsPrototype;
 
+/// <summary>
+/// Entry point for the mod. Registers the networked physics prop prefab on load,
+/// patches NetworkManager startup to complete deferred registration, and spawns
+/// the prop on the server once a match begins.
+/// </summary>
 public class Plugin : IPuckMod
 {
     public static string MOD_NAME = "NetcodePropsPrototype";
@@ -13,6 +18,10 @@ public class Plugin : IPuckMod
 
     static readonly Harmony harmony = new Harmony(MOD_GUID);
 
+    /// <summary>
+    /// True when running on the dedicated server (no GPU).
+    /// Used to skip client-only logic like mesh/material creation.
+    /// </summary>
     public static bool isServer;
 
     public bool OnEnable()
@@ -20,20 +29,24 @@ public class Plugin : IPuckMod
         Log("Enabling...");
         try
         {
+            // Dedicated servers have no GPU — use that to detect server vs client.
             isServer = SystemInfo.graphicsDeviceType == GraphicsDeviceType.Null;
             Log($"Environment: {(isServer ? "dedicated server" : "client")}");
 
-            // Register our custom prefab handler on both sides BEFORE network starts.
-            // This is critical — both server and client need to know how to
-            // instantiate our NetworkObject by its hash.
+            // Create and register the prop prefab on both server and client.
+            // Must happen BEFORE NetworkManager starts so both sides know how
+            // to instantiate the NetworkObject by its hash.
             PhysicsPropManager.RegisterPrefab();
 
-            // Patch to hook into server start event for spawning,
-            // and NetworkManager availability for deferred registration.
-            harmony.PatchAll(typeof(ServerStartPatch));
+            // These patches ensure prefab registration completes right before
+            // networking starts, in case NetworkManager.Singleton wasn't available
+            // yet during RegisterPrefab().
             harmony.PatchAll(typeof(NetworkManagerStartServerPatch));
             harmony.PatchAll(typeof(NetworkManagerStartHostPatch));
             harmony.PatchAll(typeof(NetworkManagerStartClientPatch));
+
+            // This patch spawns the prop on the server once a match starts.
+            harmony.PatchAll(typeof(ServerStartPatch));
 
             Log("Enabled!");
             return true;
@@ -62,45 +75,34 @@ public class Plugin : IPuckMod
         }
     }
 
-    /// <summary>
-    /// Hook into NetworkManager startup to complete deferred prefab registration.
-    /// Patching both StartServer and StartClient so both sides register before networking begins.
-    /// </summary>
+    // --- Harmony patches ---
+    // Complete deferred prefab registration right before any networking mode starts.
+    // We patch all three modes (server/host/client) to cover every scenario.
+
     [HarmonyPatch(typeof(NetworkManager), "StartServer")]
     class NetworkManagerStartServerPatch
     {
         [HarmonyPrefix]
-        static void Prefix()
-        {
-            Log("NetworkManager.StartServer — completing prefab registration...");
-            PhysicsPropManager.TryCompleteDeferredRegistration();
-        }
+        static void Prefix() => PhysicsPropManager.TryCompleteDeferredRegistration();
     }
 
     [HarmonyPatch(typeof(NetworkManager), "StartHost")]
     class NetworkManagerStartHostPatch
     {
         [HarmonyPrefix]
-        static void Prefix()
-        {
-            Log("NetworkManager.StartHost — completing prefab registration...");
-            PhysicsPropManager.TryCompleteDeferredRegistration();
-        }
+        static void Prefix() => PhysicsPropManager.TryCompleteDeferredRegistration();
     }
 
     [HarmonyPatch(typeof(NetworkManager), "StartClient")]
     class NetworkManagerStartClientPatch
     {
         [HarmonyPrefix]
-        static void Prefix()
-        {
-            Log("NetworkManager.StartClient — completing prefab registration...");
-            PhysicsPropManager.TryCompleteDeferredRegistration();
-        }
+        static void Prefix() => PhysicsPropManager.TryCompleteDeferredRegistration();
     }
 
     /// <summary>
-    /// Hook into server start to spawn our prop after networking is ready.
+    /// Once the game server has fully started, spawn our prop after a short delay
+    /// to give the scene time to load.
     /// </summary>
     [HarmonyPatch(typeof(ServerManagerController), "Event_Server_OnServerStarted")]
     class ServerStartPatch
@@ -109,24 +111,19 @@ public class Plugin : IPuckMod
         static void Postfix()
         {
             if (!isServer) return;
-
             Log("Server started — spawning physics prop in 3 seconds...");
             PhysicsPropManager.SpawnWithDelay(3f);
         }
     }
 
-    public static void Log(string message)
-    {
+    // --- Logging helpers ---
+
+    public static void Log(string message) =>
         Debug.Log($"[{MOD_NAME}] {message}");
-    }
 
-    public static void LogWarning(string message)
-    {
+    public static void LogWarning(string message) =>
         Debug.LogWarning($"[{MOD_NAME}] {message}");
-    }
 
-    public static void LogError(string message)
-    {
+    public static void LogError(string message) =>
         Debug.LogError($"[{MOD_NAME}] {message}");
-    }
 }

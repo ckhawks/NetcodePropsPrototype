@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Reflection;
 using UnityEngine;
 using Unity.Netcode;
 using Object = UnityEngine.Object;
@@ -7,23 +8,50 @@ using Object = UnityEngine.Object;
 namespace NetcodePropsPrototype;
 
 /// <summary>
-/// Manages the lifecycle of our networked physics prop:
-/// - Creates a "prefab" GameObject programmatically
-/// - Registers it with Netcode so both server and client can instantiate it
-/// - Spawns instances on the server
+/// Manages the full lifecycle of our networked physics prop:
+///   1. Creates a "prefab" GameObject programmatically (no Unity Editor needed)
+///   2. Registers it with Netcode's PrefabHandler so both server and client
+///      know how to instantiate it by its hash
+///   3. Spawns instances on the server with physics enabled
+///
+/// On the client, the game's SynchronizedObject system handles position sync —
+/// it snaps the object to the server's position each network tick via OnClientTick().
 /// </summary>
 public static class PhysicsPropManager
 {
-    // Our programmatic "prefab" — a template GameObject that Netcode clones on spawn
+    /// <summary>
+    /// The inactive template GameObject that Netcode clones when spawning.
+    /// Lives in DontDestroyOnLoad so it persists across scene loads.
+    /// </summary>
     private static GameObject prefabTemplate;
 
-    // The GlobalObjectIdHash we assign to our prefab.
-    // This must match on server and client. We pick an arbitrary fixed value
-    // that won't collide with the game's existing prefabs.
+    /// <summary>
+    /// Reference to the spawned instance so we can clean it up on disable.
+    /// </summary>
+    private static NetworkObject spawnedInstance;
+
+    /// <summary>
+    /// True if RegisterPrefab() ran before NetworkManager.Singleton was available.
+    /// Registration will complete in TryCompleteDeferredRegistration().
+    /// </summary>
+    private static bool prefabRegistrationPending;
+
+    /// <summary>
+    /// Arbitrary fixed hash that identifies our prefab. Must match on server and client.
+    /// Chosen to not collide with the game's existing prefab hashes.
+    /// </summary>
     private const uint PROP_HASH = 0xDE_AD_BE_EF;
 
-    // Keep a reference to our spawned instance for cleanup
-    private static NetworkObject spawnedInstance;
+    /// <summary>
+    /// Reflection binding flags — we use reflection to set fields on NetworkObject
+    /// because their setters are editor-only or internal.
+    /// </summary>
+    private static readonly BindingFlags AllFlags =
+        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+
+    // =====================
+    //  Prefab Registration
+    // =====================
 
     /// <summary>
     /// Creates the prefab template and registers it with Netcode.
@@ -31,135 +59,117 @@ public static class PhysicsPropManager
     /// </summary>
     public static void RegisterPrefab()
     {
-        Plugin.Log("Creating physics prop prefab template...");
-
-        // Create the template GameObject (this is our "prefab")
+        // Build the template GameObject with all needed components
         prefabTemplate = CreatePropGameObject("PhysicsPropPrefab");
 
-        // Mark it as inactive so it doesn't appear in the scene —
-        // Netcode will instantiate copies of it when Spawn() is called
+        // Keep it inactive and persistent — Netcode instantiates copies on spawn
         prefabTemplate.SetActive(false);
         Object.DontDestroyOnLoad(prefabTemplate);
 
-        // Set the GlobalObjectIdHash on the prefab's NetworkObject FIRST
-        // so Netcode knows this prefab by our chosen hash.
+        // Tell Netcode what hash identifies this prefab
         SetGlobalObjectIdHash(prefabTemplate.GetComponent<NetworkObject>(), PROP_HASH);
 
-        // Register with Netcode's PrefabHandler using our custom handler.
-        // NetworkManager.Singleton may not exist yet at OnEnable time —
-        // if so, we'll defer registration to when it becomes available.
+        // Disable Netcode's built-in transform sync — the game uses its own
+        // SynchronizedObject system for tick-based position updates instead
+        DisableNetcodeTransformSync(prefabTemplate.GetComponent<NetworkObject>());
+
+        // Register with Netcode now if possible, otherwise defer to startup patches
         if (NetworkManager.Singleton != null)
-        {
             RegisterWithNetworkManager();
-        }
         else
-        {
-            Plugin.Log("NetworkManager.Singleton is null — deferring prefab registration...");
             prefabRegistrationPending = true;
-        }
-    }
-
-    private static bool prefabRegistrationPending = false;
-
-    /// <summary>
-    /// Called when we know NetworkManager.Singleton is available.
-    /// </summary>
-    public static void RegisterWithNetworkManager()
-    {
-        if (prefabTemplate == null)
-        {
-            Plugin.LogError("Cannot register — prefab template is null!");
-            return;
-        }
-
-        var handler = new PhysicsPropInstanceHandler(prefabTemplate);
-        NetworkManager.Singleton.PrefabHandler.AddHandler(PROP_HASH, handler);
-        prefabRegistrationPending = false;
-
-        Plugin.Log($"Prefab registered with NetworkManager (hash 0x{PROP_HASH:X8})");
     }
 
     /// <summary>
-    /// Call this to complete deferred registration if it was pending.
+    /// Called from Harmony patches on NetworkManager.Start* methods.
+    /// Completes registration that was deferred because NetworkManager
+    /// wasn't available yet during OnEnable.
     /// </summary>
     public static void TryCompleteDeferredRegistration()
     {
         if (prefabRegistrationPending && NetworkManager.Singleton != null)
-        {
             RegisterWithNetworkManager();
-        }
     }
 
     /// <summary>
-    /// Creates a GameObject with all the components needed for a networked physics prop.
+    /// Registers our custom instance handler with Netcode's PrefabHandler.
+    /// This tells Netcode: "when you need to instantiate hash 0xDEADBEEF,
+    /// use PhysicsPropInstanceHandler instead of the default Instantiate."
+    /// </summary>
+    private static void RegisterWithNetworkManager()
+    {
+        var handler = new PhysicsPropInstanceHandler(prefabTemplate);
+        NetworkManager.Singleton.PrefabHandler.AddHandler(PROP_HASH, handler);
+        prefabRegistrationPending = false;
+        Plugin.Log($"Prefab registered with NetworkManager (hash 0x{PROP_HASH:X8})");
+    }
+
+    // =================
+    //  Prefab Creation
+    // =================
+
+    /// <summary>
+    /// Builds a GameObject with all components needed for a networked physics prop:
+    /// mesh + material (client only), rigidbody, collider, SynchronizedObject, NetworkObject.
     /// </summary>
     private static GameObject CreatePropGameObject(string name)
     {
         var go = new GameObject(name);
 
-        // Visual: only add mesh/material on clients (server has no shaders)
+        // --- Visual (client only — server has no GPU/shaders) ---
         if (!Plugin.isServer)
         {
             var meshFilter = go.AddComponent<MeshFilter>();
             meshFilter.mesh = CreateCubeMesh();
 
-            // Try URP lit shader first, then Standard as fallback
             var shader = Shader.Find("Universal Render Pipeline/Lit")
                       ?? Shader.Find("Universal Render Pipeline/Simple Lit")
                       ?? Shader.Find("Standard");
+
+            var meshRenderer = go.AddComponent<MeshRenderer>();
             if (shader != null)
-            {
-                var meshRenderer = go.AddComponent<MeshRenderer>();
-                meshRenderer.material = new Material(shader)
-                {
-                    color = new Color(1f, 0.4f, 0.1f) // orange
-                };
-            }
-            else
-            {
-                Plugin.LogWarning("Standard shader not found — prop will be invisible.");
-                go.AddComponent<MeshRenderer>();
-            }
+                meshRenderer.material = new Material(shader) { color = new Color(1f, 0.4f, 0.1f) };
         }
 
-        // Set to the Puck layer so it collides with the rink floor
+        // --- Layer: use "Puck" layer so it collides with the rink floor ---
         int puckLayer = LayerMask.NameToLayer("Puck");
         if (puckLayer >= 0)
-        {
             go.layer = puckLayer;
-            Plugin.Log($"Set layer to Puck ({puckLayer})");
-        }
-        else
-        {
-            Plugin.LogWarning("Could not find 'Puck' layer — prop may fall through floor!");
-        }
 
-        // Physics: rigidbody + collider for server-side simulation
+        // --- Physics ---
+        // Defaults to kinematic (no simulation). Server enables physics after spawn;
+        // client stays kinematic because SynchronizedObject sets position from ticks.
         var rb = go.AddComponent<Rigidbody>();
+        rb.isKinematic = true;
+        rb.useGravity = false;
         rb.mass = 2f;
         rb.drag = 0.5f;
-        rb.angularDrag = 1f;
+        rb.angularDamping = 1f;
 
-        var collider = go.AddComponent<BoxCollider>();
-        collider.size = Vector3.one;
-
-        // Scale it down to a reasonable size
+        go.AddComponent<BoxCollider>().size = Vector3.one;
         go.transform.localScale = Vector3.one * 0.5f;
 
-        // Networking: NetworkObject (required) + our behaviour for state sync
+        // --- Networking ---
+        // SynchronizedObject must be added BEFORE NetworkObject so that
+        // NetworkObject.Awake() discovers it as a NetworkBehaviour.
+        // If added after, OnNetworkPostSpawn() never fires and the object
+        // is never registered with SynchronizedObjectManager for tick-based sync.
+        go.AddComponent<SynchronizedObject>();
         go.AddComponent<NetworkObject>();
-        go.AddComponent<PhysicsPropBehaviour>();
 
         return go;
     }
 
+    // ==========
+    //  Spawning
+    // ==========
+
     /// <summary>
-    /// Spawns the prop on the server after a delay (to let the scene load).
+    /// Spawns the prop after a delay. Uses a temporary coroutine runner
+    /// because we're in a static context with no MonoBehaviour.
     /// </summary>
     public static void SpawnWithDelay(float delay)
     {
-        // Use a coroutine runner since we're in a static context.
-        // Create a temporary MonoBehaviour to host the coroutine.
         var runner = new GameObject("PropSpawnRunner").AddComponent<CoroutineRunner>();
         Object.DontDestroyOnLoad(runner.gameObject);
         runner.StartCoroutine(SpawnAfterDelay(delay, runner.gameObject));
@@ -167,9 +177,7 @@ public static class PhysicsPropManager
 
     private static IEnumerator SpawnAfterDelay(float delay, GameObject runner)
     {
-        Plugin.Log($"Coroutine started, waiting {delay}s...");
         yield return new WaitForSeconds(delay);
-        Plugin.Log("Delay complete, attempting spawn...");
 
         try
         {
@@ -184,26 +192,27 @@ public static class PhysicsPropManager
     }
 
     /// <summary>
-    /// Spawns a physics prop at the given position. Server only.
+    /// Instantiates and network-spawns a physics prop at the given position.
+    /// Server only — clients receive the spawn via Netcode and create their
+    /// own instance through PhysicsPropInstanceHandler.
     /// </summary>
     public static void SpawnProp(Vector3 position)
     {
-        if (!NetworkManager.Singleton.IsServer)
-        {
-            Plugin.LogWarning("SpawnProp called on client — ignoring.");
-            return;
-        }
+        if (!NetworkManager.Singleton.IsServer) return;
 
-        Plugin.Log($"Spawning physics prop at {position}...");
-
-        // Instantiate from our template
         var instance = Object.Instantiate(prefabTemplate, position, Quaternion.identity);
         instance.SetActive(true);
         instance.name = "PhysicsProp_Networked";
 
-        // Ensure the hash is set on the instance too
         var netObj = instance.GetComponent<NetworkObject>();
         SetGlobalObjectIdHash(netObj, PROP_HASH);
+        DisableNetcodeTransformSync(netObj);
+
+        // On the server, enable physics so the rigidbody simulates.
+        // Clients keep it kinematic — SynchronizedObject handles their position.
+        var rb = instance.GetComponent<Rigidbody>();
+        rb.isKinematic = false;
+        rb.useGravity = true;
 
         // Spawn as server-owned (no specific client ownership)
         netObj.Spawn(false);
@@ -212,80 +221,13 @@ public static class PhysicsPropManager
         Plugin.Log($"Physics prop spawned! NetworkObjectId={netObj.NetworkObjectId}");
     }
 
+    // =========
+    //  Cleanup
+    // =========
+
     /// <summary>
-    /// Sets GlobalObjectIdHash on a NetworkObject using reflection,
-    /// since the setter is typically editor-only.
+    /// Despawns the prop and destroys the prefab template. Called on mod disable.
     /// </summary>
-    private static void SetGlobalObjectIdHash(NetworkObject netObj, uint hash)
-    {
-        var allFlags = System.Reflection.BindingFlags.Public |
-                       System.Reflection.BindingFlags.NonPublic |
-                       System.Reflection.BindingFlags.Instance;
-
-        // Log all fields on NetworkObject that contain "hash" or "id" for debugging
-        Plugin.Log("NetworkObject fields (searching for hash field):");
-        foreach (var f in typeof(NetworkObject).GetFields(allFlags))
-        {
-            if (f.Name.IndexOf("hash", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                f.Name.IndexOf("Hash", StringComparison.Ordinal) >= 0 ||
-                f.Name.IndexOf("Id", StringComparison.Ordinal) >= 0 ||
-                f.Name.IndexOf("Prefab", StringComparison.Ordinal) >= 0)
-            {
-                Plugin.Log($"  field: {f.Name} ({f.FieldType.Name}) = {f.GetValue(netObj)}");
-            }
-        }
-        foreach (var p in typeof(NetworkObject).GetProperties(allFlags))
-        {
-            if (p.Name.IndexOf("hash", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                p.Name.IndexOf("Hash", StringComparison.Ordinal) >= 0 ||
-                p.Name.IndexOf("GlobalObject", StringComparison.Ordinal) >= 0)
-            {
-                try
-                {
-                    Plugin.Log($"  prop: {p.Name} ({p.PropertyType.Name}) = {p.GetValue(netObj)} canWrite={p.CanWrite}");
-                }
-                catch
-                {
-                    Plugin.Log($"  prop: {p.Name} ({p.PropertyType.Name}) [could not read]");
-                }
-            }
-        }
-
-        // Try known field names (including the one found in DLL strings)
-        foreach (var name in new[] {
-            "GlobalObjectIdHash",
-            "globalObjectIdHash",
-            "m_GlobalObjectIdHash",
-            "m_globalObjectIdHash",
-            "<GlobalObjectIdHash>k__BackingField"
-        })
-        {
-            var field = typeof(NetworkObject).GetField(name, allFlags);
-            if (field != null && field.FieldType == typeof(uint))
-            {
-                field.SetValue(netObj, hash);
-                Plugin.Log($"Set GlobalObjectIdHash via field '{name}' = 0x{hash:X8}");
-                return;
-            }
-        }
-
-        // Try setting via property setter
-        var prop = typeof(NetworkObject).GetProperty("GlobalObjectIdHash", allFlags);
-        if (prop != null && prop.CanWrite)
-        {
-            prop.SetValue(netObj, hash);
-            Plugin.Log($"Set GlobalObjectIdHash via property setter = 0x{hash:X8}");
-            return;
-        }
-
-        Plugin.LogError("Could not find writable GlobalObjectIdHash on NetworkObject! Spawn will likely fail.");
-    }
-
-    public static void SetGlobalObjectIdHashPublic(NetworkObject netObj)
-    {
-        SetGlobalObjectIdHash(netObj, PROP_HASH);
-    }
-
     public static void Cleanup()
     {
         if (spawnedInstance != null && spawnedInstance.IsSpawned)
@@ -293,7 +235,6 @@ public static class PhysicsPropManager
             spawnedInstance.Despawn(true);
             spawnedInstance = null;
         }
-
         if (prefabTemplate != null)
         {
             Object.Destroy(prefabTemplate);
@@ -301,9 +242,60 @@ public static class PhysicsPropManager
         }
     }
 
+    // =========
+    //  Helpers
+    // =========
+
+    /// <summary>Public wrappers so PhysicsPropInstanceHandler can call these.</summary>
+    public static void SetGlobalObjectIdHashPublic(NetworkObject netObj) =>
+        SetGlobalObjectIdHash(netObj, PROP_HASH);
+
+    public static void DisableNetcodeTransformSyncPublic(NetworkObject netObj) =>
+        DisableNetcodeTransformSync(netObj);
+
     /// <summary>
-    /// Creates a simple unit cube mesh using Unity's built-in primitive.
-    /// Only called on client.
+    /// Sets GlobalObjectIdHash on a NetworkObject via reflection.
+    /// The setter is editor-only, so we write directly to the backing field.
+    /// This hash is how Netcode matches spawned objects to their prefab.
+    /// </summary>
+    private static void SetGlobalObjectIdHash(NetworkObject netObj, uint hash)
+    {
+        foreach (var name in new[] {
+            "GlobalObjectIdHash", "globalObjectIdHash",
+            "m_GlobalObjectIdHash", "<GlobalObjectIdHash>k__BackingField"
+        })
+        {
+            var field = typeof(NetworkObject).GetField(name, AllFlags);
+            if (field != null && field.FieldType == typeof(uint))
+            {
+                field.SetValue(netObj, hash);
+                return;
+            }
+        }
+        Plugin.LogError("Could not find writable GlobalObjectIdHash on NetworkObject!");
+    }
+
+    /// <summary>
+    /// Disables Netcode's built-in transform synchronization via reflection.
+    /// Without this, Netcode would sync the transform every Update() frame,
+    /// fighting with the game's SynchronizedObject tick-based system.
+    /// </summary>
+    private static void DisableNetcodeTransformSync(NetworkObject netObj)
+    {
+        foreach (var name in new[] { "SynchronizeTransform", "m_SynchronizeTransform", "AutoObjectParentSync" })
+        {
+            var field = typeof(NetworkObject).GetField(name, AllFlags);
+            if (field != null && field.FieldType == typeof(bool))
+                field.SetValue(netObj, false);
+        }
+
+        var prop = typeof(NetworkObject).GetProperty("SynchronizeTransform", AllFlags);
+        if (prop != null && prop.CanWrite)
+            prop.SetValue(netObj, false);
+    }
+
+    /// <summary>
+    /// Creates a unit cube mesh by borrowing from Unity's built-in cube primitive.
     /// </summary>
     private static Mesh CreateCubeMesh()
     {
@@ -315,6 +307,6 @@ public static class PhysicsPropManager
 }
 
 /// <summary>
-/// Minimal MonoBehaviour just to host coroutines from static context.
+/// Minimal MonoBehaviour to host coroutines from static context.
 /// </summary>
 public class CoroutineRunner : MonoBehaviour { }
