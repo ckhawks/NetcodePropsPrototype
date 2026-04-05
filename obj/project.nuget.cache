@@ -1,0 +1,11 @@
+{
+  "version": 2,
+  "dgSpecHash": "qiEVHuYNd5M=",
+  "success": true,
+  "projectFilePath": "C:\\Projects\\Puck Plugins\\NetcodePropsPrototype\\NetcodePropsPrototype.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\stlrc\\.nuget\\packages\\microsoft.netframework.referenceassemblies\\1.0.3\\microsoft.netframework.referenceassemblies.1.0.3.nupkg.sha512",
+    "C:\\Users\\stlrc\\.nuget\\packages\\microsoft.netframework.referenceassemblies.net48\\1.0.3\\microsoft.netframework.referenceassemblies.net48.1.0.3.nupkg.sha512"
+  ],
+  "logs": []
+}

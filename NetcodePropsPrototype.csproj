@@ -1,0 +1,49 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net4.8</TargetFramework>
+    <LangVersion>10</LangVersion>
+    <PackageId>NetcodePropsPrototype</PackageId>
+    <Authors>NetcodePropsPrototype</Authors>
+    <Company>NetcodePropsPrototype</Company>
+    <Product>NetcodePropsPrototype</Product>
+    <NoWarn>$(NoWarn);CS1998</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Libs Include="libs\*.dll" />
+
+    <Reference Include="@(Libs)">
+      <HintPath>%(Libs.FullPath)</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <Target Name="PreBuildMessage" BeforeTargets="Build">
+    <Message Importance="high" Text="Building $(AssemblyName)..." />
+  </Target>
+
+  <Target Name="PostBuildMessage" AfterTargets="Build">
+    <Message Importance="high" Text="$(AssemblyName) built successfully!" />
+  </Target>
+
+  <!-- Copy to BOTH server and client plugin folders -->
+  <Target Name="PostBuildCopyToServer" AfterTargets="Build">
+    <PropertyGroup>
+      <ServerDir>C:\Program Files (x86)\Steam\steamapps\common\Puck Dedicated Server\Plugins\NetcodePropsPrototype</ServerDir>
+    </PropertyGroup>
+    <MakeDir Directories="$(ServerDir)" />
+    <Copy SourceFiles="$(OutputPath)$(AssemblyName).dll" DestinationFolder="$(ServerDir)" OverwriteReadOnlyFiles="true" />
+    <Message Importance="high" Text="Copied $(AssemblyName).dll to $(ServerDir)" />
+  </Target>
+
+  <Target Name="PostBuildCopyToClient" AfterTargets="Build">
+    <PropertyGroup>
+      <ClientDir>C:\Program Files (x86)\Steam\steamapps\common\Puck\Plugins\NetcodePropsPrototype</ClientDir>
+    </PropertyGroup>
+    <MakeDir Directories="$(ClientDir)" />
+    <Copy SourceFiles="$(OutputPath)$(AssemblyName).dll" DestinationFolder="$(ClientDir)" OverwriteReadOnlyFiles="true" />
+    <Message Importance="high" Text="Copied $(AssemblyName).dll to $(ClientDir)" />
+  </Target>
+
+</Project>

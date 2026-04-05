@@ -1,0 +1,9 @@
+C:\Projects\Puck Plugins\NetcodePropsPrototype\bin\Debug\net4.8\NetcodePropsPrototype.dll
+C:\Projects\Puck Plugins\NetcodePropsPrototype\bin\Debug\net4.8\NetcodePropsPrototype.pdb
+C:\Projects\Puck Plugins\NetcodePropsPrototype\obj\Debug\net4.8\NetcodePropsPrototype.csproj.AssemblyReference.cache
+C:\Projects\Puck Plugins\NetcodePropsPrototype\obj\Debug\net4.8\NetcodePropsPrototype.GeneratedMSBuildEditorConfig.editorconfig
+C:\Projects\Puck Plugins\NetcodePropsPrototype\obj\Debug\net4.8\NetcodePropsPrototype.AssemblyInfoInputs.cache
+C:\Projects\Puck Plugins\NetcodePropsPrototype\obj\Debug\net4.8\NetcodePropsPrototype.AssemblyInfo.cs
+C:\Projects\Puck Plugins\NetcodePropsPrototype\obj\Debug\net4.8\NetcodePropsPrototype.csproj.CoreCompileInputs.cache
+C:\Projects\Puck Plugins\NetcodePropsPrototype\obj\Debug\net4.8\NetcodePropsPrototype.dll
+C:\Projects\Puck Plugins\NetcodePropsPrototype\obj\Debug\net4.8\NetcodePropsPrototype.pdb
